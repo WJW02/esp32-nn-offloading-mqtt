@@ -383,6 +383,10 @@ void processIncomingMessage(char* topic, byte* payload, unsigned int length) {
   // Check if the message is for model_inference
   if (strcmp(topic, model_inference_topic.c_str()) == 0) {
     int offloading_layer_index = doc["offloading_layer_index"];
+    if (offloading_layer_index >= MAX_NUM_LAYER) {
+      Serial.println("Invalid offloading layer");
+      return;
+    }
     JsonArray inputData = doc["input_data"]; 
     getModelDataForPrediction(inputData);
     runNeuralNetworkLayer(offloading_layer_index, inputBuffer);
