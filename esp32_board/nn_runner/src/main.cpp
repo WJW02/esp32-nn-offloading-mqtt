@@ -5,7 +5,6 @@
 */
 #include <WiFi.h>
 #include <PubSubClient.h>
-#define MQTT_MAX_PACKET_SIZE 3*1024 // Important: Adjust size to correctly send and recieve topic messages
 #include <sys/time.h>
 #include <UUID.h>
 #include <ArduinoJson.h>
@@ -39,7 +38,7 @@ bool                        deviceRegistered = false;
 UUID                        uuid;
 String                      MessageUUID = "";
 String                      DeviceUUID = "";
-StaticJsonDocument<65*1024> jsonDoc;
+StaticJsonDocument<OUTPUT_JSONDOC_SIZE> jsonDoc;
 
 String                      end_computation_topic;
 String                      device_registration_topic = "devices/";
@@ -49,22 +48,15 @@ String                      model_inference_result_topic;
 
 bool                        testFinished = false;
 bool                        modelDataLoaded = false;
-constexpr int               BATCH_SIZE = 1;
-constexpr int               IMAGE_HEIGHT = 32;
-constexpr int               IMAGE_WIDTH = 32;
-constexpr int               CHANNELS = 3;
-constexpr int               MODEL_MAX_LAYER_NUM_ELEMENT = 1*32*32*16;
-float                       inputBuffer[MODEL_MAX_LAYER_NUM_ELEMENT] = {};
+float                       inputBuffer[MAX_ELEMENTS_PER_MODEL_LAYER] = {};
 
 // Neural Network Variables
-const int                   MAX_NUM_LAYER = 7;
 tflite::MicroErrorReporter  micro_error_reporter;
 tflite::ErrorReporter*      error_reporter = &micro_error_reporter;
 const tflite::Model*        model = nullptr;
 tflite::MicroInterpreter*   interpreter = nullptr;
 TfLiteTensor*               input;
 TfLiteTensor*               output;
-constexpr int               K_TENSOR_ARENA_SIZE = 85*1024;
 uint8_t                     tensor_arena[K_TENSOR_ARENA_SIZE];
 bool                        modelLoaded = false;
 bool                        firstInferenceDone = false; 
@@ -159,7 +151,7 @@ void loadNeuralNetworkLayer(String layer_name){
 extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuffer[]) {
   // Initialize input data with image
   float* inputData = inputBuffer;
-  int inputSize = BATCH_SIZE * IMAGE_HEIGHT * IMAGE_WIDTH * CHANNELS * sizeof(float); // Adjust depending on your input format
+  int inputSize = BATCH_SIZE * IMAGE_HEIGHT * IMAGE_WIDTH * CHANNELS * sizeof(float);
 
   // Assuming inputData is in the format expected by your neural network
   for (int i = 0; i <= offloading_layer_index; i++) {
@@ -284,7 +276,7 @@ void mqttConfiguration(){
       delay(500);
     }
   }
-  client.setBufferSize(24*1024); // Important: Adjust size to correctly send and recieve topic messages
+  client.setBufferSize(MQTT_MAX_PACKET_SIZE);
   Serial.println("Connected to MQTT Broker");
 }
 
@@ -362,7 +354,7 @@ void processIncomingMessage(char* topic, byte* payload, unsigned int length) {
   }
 
   // Parse the JSON message and store it in the DynamicJsonDocument
-  DynamicJsonDocument doc(65*1024); // Adjust size as needed
+  DynamicJsonDocument doc(INPUT_JSONDOC_SIZE);
   DeserializationError error = deserializeJson(doc, message);
 
   // Check for parsing errors
