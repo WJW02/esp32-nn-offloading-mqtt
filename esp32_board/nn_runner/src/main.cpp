@@ -23,11 +23,7 @@
 #include "tensorflow/lite/micro/system_setup.h"
 
 #define MODEL_NAME "test_model"
-#include "model_layers/layer_0.h"
-#include "model_layers/layer_1.h"
-#include "model_layers/layer_2.h"
-#include "model_layers/layer_3.h"
-#include "model_layers/layer_4.h"
+#include "model_layers/layers.h"
 
 /* 
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -43,7 +39,7 @@ bool                        deviceRegistered = false;
 UUID                        uuid;
 String                      MessageUUID = "";
 String                      DeviceUUID = "";
-StaticJsonDocument<2048>    jsonDoc;
+StaticJsonDocument<65*1024> jsonDoc;
 
 String                      end_computation_topic;
 String                      device_registration_topic = "devices/";
@@ -53,20 +49,23 @@ String                      model_inference_result_topic;
 
 bool                        testFinished = false;
 bool                        modelDataLoaded = false;
-int                         imageHeight = 10;
-int                         imageWidth = 10;
-float                       modelInferenceData[10][10] = {};
+constexpr int               BATCH_SIZE = 1;
+constexpr int               IMAGE_HEIGHT = 32;
+constexpr int               IMAGE_WIDTH = 32;
+constexpr int               CHANNELS = 3;
+constexpr int               MODEL_MAX_LAYER_NUM_ELEMENT = 1*32*32*16;
+float                       inputBuffer[MODEL_MAX_LAYER_NUM_ELEMENT] = {};
 
 // Neural Network Variables
-const int                   MAX_NUM_LAYER = 5;
+const int                   MAX_NUM_LAYER = 7;
 tflite::MicroErrorReporter  micro_error_reporter;
 tflite::ErrorReporter*      error_reporter = &micro_error_reporter;
 const tflite::Model*        model = nullptr;
 tflite::MicroInterpreter*   interpreter = nullptr;
 TfLiteTensor*               input;
 TfLiteTensor*               output;
-constexpr int               kTensorArenaSize = 12*1024;
-uint8_t                     tensor_arena[kTensorArenaSize];
+constexpr int               K_TENSOR_ARENA_SIZE = 85*1024;
+uint8_t                     tensor_arena[K_TENSOR_ARENA_SIZE];
 bool                        modelLoaded = false;
 bool                        firstInferenceDone = false; 
 
@@ -131,11 +130,7 @@ void publishDevicePrediction(int offloading_layer_index, JsonArray layer_output,
 */
 void loadNeuralNetworkLayer(String layer_name){
   // Import del modello da testare -> Nome nell'header file
-  if(layer_name.equals("layer_0"))model = tflite::GetModel(layer_0);
-  if(layer_name.equals("layer_1"))model = tflite::GetModel(layer_1);
-  if(layer_name.equals("layer_2"))model = tflite::GetModel(layer_2);
-  if(layer_name.equals("layer_3"))model = tflite::GetModel(layer_3);
-  if(layer_name.equals("layer_4"))model = tflite::GetModel(layer_4);
+  LOAD_LAYER();
 
   if (model->version() != TFLITE_SCHEMA_VERSION) {
       Serial.println("Model provided is schema version not equal to supported!");
@@ -144,9 +139,9 @@ void loadNeuralNetworkLayer(String layer_name){
 
   // Questo richiama tutte le implementazioni delle operazioni di cui abbiamo bisogno
   tflite::AllOpsResolver resolver;
-  tflite::MicroInterpreter static_interpreter(model, resolver, tensor_arena, kTensorArenaSize, error_reporter);
+  tflite::MicroInterpreter static_interpreter(model, resolver, tensor_arena, K_TENSOR_ARENA_SIZE, error_reporter);
   interpreter = &static_interpreter;
-  Serial.print("Interprete ok");
+  Serial.println("Interprete ok");
 
   // Alloco la memoria del tensor_arena per i tensori del modello
   TfLiteStatus allocate_status = interpreter->AllocateTensors();
@@ -161,17 +156,43 @@ void loadNeuralNetworkLayer(String layer_name){
 * INFERENCE FOR NN LAYER
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 */
-extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputData[10][10]) {
+extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuffer[]) {
+  // Initialize input data with image
+  float* inputData = inputBuffer;
+  int inputSize = BATCH_SIZE * IMAGE_HEIGHT * IMAGE_WIDTH * CHANNELS * sizeof(float); // Adjust depending on your input format
+
   // Assuming inputData is in the format expected by your neural network
   for (int i = 0; i <= offloading_layer_index; i++) {
     String layer_name = "layer_" + String(i);
     float inizio = micros();
     
     loadNeuralNetworkLayer(layer_name); // Load the appropriate layer
-    input = interpreter->input(0);
+    input= interpreter->input(0);
 
     // Copy the input data to the input tensor
-    memcpy(input->data.f, inputData, imageHeight * imageWidth * sizeof(float)); // Adjust depending on your input format
+    memcpy(input->data.f, inputData, inputSize);
+
+#ifdef DEBUG
+    Serial.print("LAYER " + String(i) + " INPUT TENSOR: (");
+    for (int j = 0; j < input->dims->size; ++j) {
+      Serial.print(input->dims->data[j]);
+      if (j+1 < input->dims->size) {
+        Serial.print(", ");
+      }
+    }
+    Serial.println(")");
+
+    int numInput = 1;
+    for (int j = 0; j < input->dims->size; ++j) {
+      numInput *= input->dims->data[j];
+    }
+    Serial.println("LAYER " + String(i) + " INPUT DATA:");
+    for (int j = 0; j < numInput; ++j) {
+      Serial.print(inputData[j]);
+      Serial.print(" ");
+    }
+    Serial.println();
+#endif // DEBUG
 
     // Run inference
     interpreter->Invoke();
@@ -180,30 +201,53 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputDat
     jsonDoc["layer_inference_time"][i] = (micros() - inizio) / 1000000.0; // Convert microseconds to seconds
 
     // Extract relevant information from the output tensor
-    TfLiteTensor* outputTensor = interpreter->output(0);
-    float* outputData = outputTensor->data.f;
-    // TODO: Fix this We need to take thee last element of data not always 1
-    int numOutput = outputTensor->dims->data[1];
+    output = interpreter->output(0);
+    float* outputData = output->data.f;
+    int outputSize = output->bytes;
 
-    /*
-    Serial.println("Output tensor dimensions for layer: " + String(i));
-    for (int d = 0; d < outputTensor->dims->size; d++) {
-        Serial.print("Dimension ");
-        Serial.print(d);
-        Serial.print(": ");
-        Serial.println(outputTensor->dims->data[d]);
+#ifdef DEBUG
+    Serial.print("LAYER " + String(i) + " OUTPUT TENSOR: (");
+    for (int j = 0; j < output->dims->size; ++j) {
+      Serial.print(output->dims->data[j]);
+      if (j+1 < output->dims->size) {
+        Serial.print(", ");
+      }
     }
-    */
+    Serial.println(")");
 
-    // Store output values in the JSON document
-    for (int j = 0; j < numOutput; j++) {
-      jsonDoc["layer_output"][i].add(String(outputData[j]));
+    int numOutput = 1;
+    for (int j = 0; j < output->dims->size; ++j) {
+      numOutput *= output->dims->data[j];
     }
+    Serial.println("LAYER " + String(i) + " OUTPUT DATA:");
+    for (int j = 0; j < numOutput; ++j) {
+      Serial.print(outputData[j]);
+      Serial.print(" ");
+    }
+    Serial.println();
+#endif // DEBUG
+
+    // Set next layer's input data and size
+    memcpy(inputData, outputData, outputSize);
+    inputSize = outputSize;
 
     Serial.println("Computed layer: " + String(i) + " Inf Time: " + String((micros() - inizio) / 1000000.0) + " s");
   }
-  Serial.println("Last layer output: "+jsonDoc["layer_output"][offloading_layer_index].as<String>());
-  publishDevicePrediction(offloading_layer_index, jsonDoc["layer_output"][offloading_layer_index], jsonDoc["layer_inference_time"]);
+
+  // Compute number of elements
+  int numOutput = 1;
+  for (int i = 0; i < output->dims->size; ++i) {
+    numOutput *= output->dims->data[i];
+  }
+
+  // Store offloading layer output
+  float* outputData = output->data.f;
+  for (int i = 0; i < numOutput; ++i) {
+    jsonDoc["layer_output"][i] = outputData[i];
+  }
+
+  Serial.println("Last layer output: "+jsonDoc["layer_output"].as<String>());
+  publishDevicePrediction(offloading_layer_index, jsonDoc["layer_output"], jsonDoc["layer_inference_time"]);
 }
 
 /* 
@@ -240,7 +284,7 @@ void mqttConfiguration(){
       delay(500);
     }
   }
-  client.setBufferSize(2*1024); // Important: Adjust size to correctly send and recieve topic messages
+  client.setBufferSize(24*1024); // Important: Adjust size to correctly send and recieve topic messages
   Serial.println("Connected to MQTT Broker");
 }
 
@@ -287,14 +331,20 @@ void registerDevice(){
 */
 #include <ArduinoJson.h>  // Make sure to include the ArduinoJson library
 
-void getModelDataForPrediction(const String& inputData) {
+void getModelDataForPrediction(const JsonArray& inputData) {
   // Convert the inputData string to a 2D array
   try {
-    for (int i = 0; i < imageHeight; ++i) {
-      for (int j = 0; j < imageWidth; ++j) {
-        modelInferenceData[i][j] = inputData[i * imageWidth + j] - '0'; // Assuming inputData contains numeric characters
+    for (int b = 0; b < BATCH_SIZE; ++b) {
+      for (int h = 0; h < IMAGE_HEIGHT; ++h) {
+        for (int w = 0; w < IMAGE_WIDTH; ++w) {
+          for (int c = 0; c < CHANNELS; ++c) {
+            int i = b*IMAGE_HEIGHT*IMAGE_WIDTH*CHANNELS + h*IMAGE_WIDTH*CHANNELS + w*CHANNELS + c;
+            inputBuffer[i] = inputData[b][h][w][c]; // Assuming inputData contains numeric characters
+          }
+        }
       }
     }
+    Serial.println();
     Serial.println("Model input data received");
   } catch (const std::exception& e) {
     Serial.print("Error receiving model input data: ");
@@ -312,30 +362,30 @@ void processIncomingMessage(char* topic, byte* payload, unsigned int length) {
   }
 
   // Parse the JSON message and store it in the DynamicJsonDocument
-  DynamicJsonDocument doc(3 * 1024); // Adjust size as needed
+  DynamicJsonDocument doc(65*1024); // Adjust size as needed
   DeserializationError error = deserializeJson(doc, message);
-  
+
   // Check for parsing errors
   if (error) {
     Serial.print("JSON parsing error: ");
     Serial.println(error.c_str());
     return;
   }
-  Serial.print("Recieved message:");
+  Serial.print("Received message:");
   Serial.println(topic);
 
   // Check if the message is for model_data
   if (strcmp(topic, model_data_topic.c_str()) == 0) {
-    String inputData = doc["input_data"]; 
+    JsonArray inputData = doc["input_data"]; 
     getModelDataForPrediction(inputData);
   }
   
   // Check if the message is for model_inference
   if (strcmp(topic, model_inference_topic.c_str()) == 0) {
     int offloading_layer_index = doc["offloading_layer_index"];
-    String inputData = doc["input_data"]; 
+    JsonArray inputData = doc["input_data"]; 
     getModelDataForPrediction(inputData);
-    runNeuralNetworkLayer(offloading_layer_index, modelInferenceData);
+    runNeuralNetworkLayer(offloading_layer_index, inputBuffer);
   }
 
   // Check if the test is finished
@@ -343,7 +393,6 @@ void processIncomingMessage(char* topic, byte* payload, unsigned int length) {
     Serial.print("Ending Computation");
     testFinished = true;
   }
-
 }
 
 void dispatchCallbackMessages() {
