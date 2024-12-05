@@ -189,9 +189,6 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
     // Run inference
     interpreter->Invoke();
 
-    // Store inference time in seconds
-    jsonDoc["layer_inference_time"][i] = (micros() - inizio) / 1000000.0; // Convert microseconds to seconds
-
     // Extract relevant information from the output tensor
     output = interpreter->output(0);
     float* outputData = output->data.f;
@@ -222,6 +219,9 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
     // Set next layer's input data and size
     memcpy(inputData, outputData, outputSize);
     inputSize = outputSize;
+
+    // Store inference time in seconds
+    jsonDoc["layer_inference_time"][i] = (micros() - inizio) / 1000000.0; // Convert microseconds to seconds
 
     Serial.println("Computed layer: " + String(i) + " Inf Time: " + String((micros() - inizio) / 1000000.0) + " s");
   }
