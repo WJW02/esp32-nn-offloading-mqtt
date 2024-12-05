@@ -4,7 +4,7 @@
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 */
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include <AsyncMqttClient.h>
 #include <sys/time.h>
 #include <UUID.h>
 #include <ArduinoJson.h>
@@ -32,8 +32,9 @@
 #include "conf.h"
 
 // Communication & Offloading Variables
-WiFiClient                  espClient;
-PubSubClient                client(espClient);
+AsyncMqttClient             mqttClient;
+TimerHandle_t               mqttReconnectTimer;
+TimerHandle_t               wifiReconnectTimer;
 bool                        deviceRegistered = false;
 UUID                        uuid;
 String                      MessageUUID = "";
@@ -49,6 +50,7 @@ String                      model_inference_result_topic;
 bool                        testFinished = false;
 bool                        modelDataLoaded = false;
 float                       inputBuffer[MAX_ELEMENTS_PER_MODEL_LAYER] = {};
+char*                       message = nullptr;
 
 // Neural Network Variables
 tflite::MicroErrorReporter  micro_error_reporter;
@@ -111,7 +113,7 @@ void publishDevicePrediction(int offloading_layer_index, JsonArray layer_output,
     String jsonMessage;
     serializeJson(jsonDoc, jsonMessage);
     // Publish the JSON message to the topic
-    client.publish(model_inference_result_topic.c_str(), jsonMessage.c_str(), 2);
+    mqttClient.publish(model_inference_result_topic.c_str(), 2, false, (char*)jsonMessage.c_str());
     Serial.println("Published Prediction");
 }
 
@@ -242,43 +244,6 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
   publishDevicePrediction(offloading_layer_index, jsonDoc["layer_output"], jsonDoc["layer_inference_time"]);
 }
 
-/* 
-* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-* WIFI CONFIGURATION
-* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-*/
-void wifiConfiguration(){
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(SSID, PWD);
-  Serial.println("Connecting to WiFi...");
-  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    Serial.println(".");
-    delay(500);
-    ESP.restart();
-  } 
-  Serial.println("Connected to WiFi - IP Address: ");
-  Serial.println(WiFi.localIP());
-  delay(500);
-}
-
-/* 
-* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-* MQTT CONFIGURATION
-* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-*/
-void mqttConfiguration(){
-  client.setServer(MQTT_SRV, MQTT_PORT);
-  while (!client.connect("ESP32Client", "", "")) {
-    Serial.println("Connecting to MQTT Broker");
-    if (!client.connected()) {
-      Serial.println("Failed to connect to MQTT Broker - retrying, rc=");
-      Serial.println(client.state());
-      delay(500);
-    }
-  }
-  client.setBufferSize(MQTT_MAX_PACKET_SIZE);
-  Serial.println("Connected to MQTT Broker");
-}
 
 /*
  * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -294,7 +259,7 @@ void generateMessageUUID(){
   MessageUUID = (String)uuid.toCharArray();
   MessageUUID = MessageUUID.substring(0, 4);
   DeviceUUID = "device_01"; // + MessageUUID;
- }
+}
 
 /*
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -311,7 +276,7 @@ void registerDevice(){
   String jsonMessage;
   serializeJson(jsonDoc, jsonMessage);
   // Publish the JSON message to the topic
-  client.publish(device_registration_topic.c_str(), jsonMessage.c_str(), 2);
+  mqttClient.publish(device_registration_topic.c_str(), 2, false, (char*)jsonMessage.c_str());
   Serial.println("Device Registered");
   deviceRegistered = true;
 }
@@ -336,7 +301,6 @@ void getModelDataForPrediction(const JsonArray& inputData) {
         }
       }
     }
-    Serial.println();
     Serial.println("Model input data received");
   } catch (const std::exception& e) {
     Serial.print("Error receiving model input data: ");
@@ -345,13 +309,24 @@ void getModelDataForPrediction(const JsonArray& inputData) {
   modelDataLoaded = true;
 }
 
-void processIncomingMessage(char* topic, byte* payload, unsigned int length) {
-  // Convert the incoming message to a string
-  String message;
-  message.reserve(length); // Reserve space in advance for efficiency
-  for (int i = 0; i < length; i++) {
-    message += (char)payload[i];
+void processIncomingMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
+  // Instantiate message
+  if (index == 0) {
+    message = new char[total+1];
   }
+
+  // Bufferize message fragments
+  for (size_t i = 0; i < len; i++) {
+    message[index+i] = payload[i];
+  }
+
+  // Return if we don't have whole message yet
+  if (index+len < total) {
+    return;
+  }
+
+  // Add terminator
+  message[total] = '\0';
 
   // Parse the JSON message and store it in the DynamicJsonDocument
   DynamicJsonDocument doc(INPUT_JSONDOC_SIZE);
@@ -361,6 +336,8 @@ void processIncomingMessage(char* topic, byte* payload, unsigned int length) {
   if (error) {
     Serial.print("JSON parsing error: ");
     Serial.println(error.c_str());
+    delete[] message;
+    message = nullptr;
     return;
   }
   Serial.print("Received message:");
@@ -386,9 +363,12 @@ void processIncomingMessage(char* topic, byte* payload, unsigned int length) {
 
   // Check if the test is finished
   if (strcmp(topic, end_computation_topic.c_str()) == 0) {
-    Serial.print("Ending Computation");
+    Serial.println("Ending Computation");
     testFinished = true;
   }
+
+  delete[] message;
+  message = nullptr;
 }
 
 void dispatchCallbackMessages() {
@@ -399,14 +379,73 @@ void dispatchCallbackMessages() {
   model_inference_result_topic = DeviceUUID + "/model_inference_result";
 
   // Subscribe to the topic
-  client.subscribe(model_data_topic.c_str());
-  client.subscribe(model_inference_topic.c_str());
-  client.subscribe(end_computation_topic.c_str());
+  mqttClient.subscribe(model_data_topic.c_str(), 2);
+  mqttClient.subscribe(model_inference_topic.c_str(), 2);
+  mqttClient.subscribe(end_computation_topic.c_str(), 2);
 
   // Set the callback function
-  client.setCallback([](char* topic, byte* payload, unsigned int length) {
-    processIncomingMessage(topic, payload, length);
-  });
+  mqttClient.onMessage(processIncomingMessage);
+}
+
+/* 
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+* MQTT CONFIGURATION
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+*/
+void connectToMqtt() {
+  Serial.println("Connecting to MQTT...");
+  mqttClient.connect();
+}
+
+void onMqttConnect(bool sessionPresent) {
+  Serial.println("Connected to MQTT.");
+  timeConfiguration();          // Synchronize Timer - NTP server
+  generateMessageUUID();        // Generate an Identifier for the message
+  dispatchCallbackMessages();   // Set the callback function for the MQTT messages
+  registerDevice();             // Register the device on the edge
+}
+
+void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+  Serial.println("Disconnected form MQTT.");
+  if (WiFi.isConnected()) {
+    xTimerStart(mqttReconnectTimer, 0);
+  }
+}
+
+void mqttConfiguration(){
+  mqttClient.onConnect(onMqttConnect);
+  mqttClient.onDisconnect(onMqttDisconnect);
+  mqttClient.setServer(MQTT_SRV, MQTT_PORT);
+}
+
+/* 
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+* WIFI CONFIGURATION
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+*/
+void connectToWifi() {
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(SSID, PWD);
+}
+
+void WiFiEvent(WiFiEvent_t event) {
+  switch(event) {
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.println("WiFi connected");
+      Serial.println("IP address: ");
+      Serial.println(WiFi.localIP());
+      connectToMqtt();
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.println("WiFi lost connection");
+      xTimerStop(mqttReconnectTimer, 0); // ensures we don't reconnect to MQTT while reconnecting to WiFi
+      xTimerStart(wifiReconnectTimer, 0);
+      break;
+  }
+}
+
+void wifiConfiguration(){
+  WiFi.onEvent(WiFiEvent);
 }
 
 /*
@@ -416,12 +455,11 @@ void dispatchCallbackMessages() {
  */
 void setup() {
   Serial.begin(115200);
+  mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
+  wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
   wifiConfiguration();          // Wi-Fi Connection
   mqttConfiguration();          // MQTT
-  timeConfiguration();          // Synchronize Timer - NTP server
-  generateMessageUUID();        // Generate an Identifier for the message
-  dispatchCallbackMessages();   // Set the callback function for the MQTT messages
-  registerDevice();             // Register the device on the edge
+  connectToWifi();
 }
 
 /* 
@@ -430,7 +468,6 @@ void setup() {
  * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  */
 void loop() {
-  client.loop(); 
   if(testFinished){
     delay(10000);
     ESP.restart();

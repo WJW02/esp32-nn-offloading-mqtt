@@ -11,7 +11,6 @@ const char* MQTT_SRV            = "hostaname.local"; // .local needed when using
 const int MQTT_PORT             = 1883;
 const char* MQTT_USR            = ""; 
 const char* MQTT_PWD            = ""; 
-#define MQTT_MAX_PACKET_SIZE 24*1024
 // ------------------------------------------------------------------------------------------------------------------------------------------------------
 // NTP Timer Configuration
 const char* NTP_SRV             = "0.it.pool.ntp.org";
