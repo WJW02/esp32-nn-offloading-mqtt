@@ -16,7 +16,7 @@ This project demonstrates offloading neural network computations from an ESP32 d
 - **ESP32 Board Support Package** (via Arduino IDE)
 - **Libraries:**
   - `WiFi.h`: For Wi-Fi connectivity.
-  - `PubSubClient.h`: For MQTT communication.
+  - `AsyncMqttClient.h`: For MQTT communication.
   - `ArduinoJson.h`: For handling JSON data.
   - `tensorflow/lite/micro`: For running TensorFlow Lite models on microcontrollers.
   - `UUID.h`: For generating UUIDs.
@@ -28,12 +28,76 @@ Edit the `conf.h` file to set up the following configurations:
 - **Wi-Fi Credentials:** `SSID` and `PWD`
 - **MQTT Broker:** `MQTT_SRV`, `MQTT_PORT`
 - **NTP Server:** `NTP_SRV`, `NTP_GMT_OFFSET`, `NTP_DAYLIGHT_OFFSET`
+- **Model:** `MAX_NUM_LAYER`, `BATCH_SIZE`, `IMAGE_HEIGHT`, `IMAGE_WIDTH`, `CHANNELS`, `MAX_ELEMENTS_PER_MODEL_LAYER`, `K_TENSOR_ARENA_SIZE`
 
 ## Model Setup
 
 The project supports up to 5 layers of a TensorFlow Lite model, which are loaded and run sequentially. Each layer is defined in its own header file (e.g., `layer_0.h`, `layer_1.h`).
 
 Ensure that the TensorFlow Lite model layers are properly converted and placed in the `model_layers` directory.
+
+## Board setup
+PlatformIO board configuration for `ESP32-S3-EYE` (8 MB Octal PSRAM and a 8 MB flash):
+
+```json
+{
+  "build": {
+    "arduino": {
+      "partitions": "default_8MB.csv",
+      "memory_type": "qio_opi"
+    },
+    "core": "esp32",
+    "extra_flags": [
+      "-DARDUINO_ESP32S3_DEV",
+      "-DARDUINO_RUNNING_CORE=1",
+      "-DARDUINO_EVENT_RUNNING_CORE=1",
+      "-DBOARD_HAS_PSRAM"
+    ],
+    "f_cpu": "240000000L",
+    "f_flash": "80000000L",
+    "flash_mode": "qio",
+    "psram_type": "opi",
+    "hwids": [
+      [
+        "0x303A",
+        "0x1001"
+      ]
+    ],
+    "mcu": "esp32s3",
+    "variant": "esp32s3"
+  },
+  "connectivity": [
+    "wifi",
+    "bluetooth"
+  ],
+  "debug": {
+    "default_tool": "esp-builtin",
+    "onboard_tools": [
+      "esp-builtin"
+    ],
+    "openocd_target": "esp32s3.cfg"
+  },
+  "frameworks": [
+    "arduino",
+    "espidf"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "name": "Espressif ESP32-S3-DevKitC-1-N8R8 (8 MB Flash Quad, 8 MB PSRAM Octal)",
+  "upload": {
+    "flash_size": "8MB",
+    "maximum_ram_size": 327680,
+    "maximum_size": 8388608,
+    "require_upload_port": true,
+    "speed": 921600
+  },
+  "url": "https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/hw-reference/esp32s3/user-guide-devkitc-1.html",
+  "vendor": "Espressif"
+}
+```
+
+Copy it in a `esp32-s3-devkitc-1-n8r8.json` file a save it in `~/.platformio/platforms/espressif32/boards` to make it available on PlatformIO. For more [boards](https://github.com/sivar2311/platformio_boards.git).
 
 ## Topics
 
@@ -63,7 +127,7 @@ The following MQTT topics are used for communication:
 
 ## Notes
 
-- The size of the MQTT packet is set to 3 KB (`MQTT_MAX_PACKET_SIZE`).
+- The ESP32 must be equipped with enough PSRAM to hold `inputBuffer`, `tensor_arena`, `jsonDoc` and `doc`
 - The device restarts automatically after completing the test, ensuring fresh initialization for the next session.
 - Ensure that the edge server is properly configured to handle incoming MQTT messages and process the neural network inference results.
 
