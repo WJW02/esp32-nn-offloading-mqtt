@@ -26,6 +26,25 @@
 
 /* 
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+*  ARDUINO JSON CONFIGURATION
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+*/
+struct SpiRamAllocator : ArduinoJson::Allocator {
+  void* allocate(size_t size) override {
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+  }
+
+  void deallocate(void* pointer) override {
+    heap_caps_free(pointer);
+  }
+
+  void* reallocate(void* ptr, size_t new_size) override {
+    return heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM);
+  }
+};
+
+/* 
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 *  CONFIGURATIONS & GLOBAL VARIABLES
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 */
@@ -39,7 +58,8 @@ bool                        deviceRegistered = false;
 UUID                        uuid;
 String                      MessageUUID = "";
 String                      DeviceUUID = "";
-StaticJsonDocument<OUTPUT_JSONDOC_SIZE> jsonDoc;
+SpiRamAllocator             allocator;
+JsonDocument                jsonDoc(&allocator);
 
 String                      end_computation_topic;
 String                      device_registration_topic = "devices/";
@@ -49,7 +69,7 @@ String                      model_inference_result_topic;
 
 bool                        testFinished = false;
 bool                        modelDataLoaded = false;
-float                       inputBuffer[MAX_ELEMENTS_PER_MODEL_LAYER] = {};
+float*                      inputBuffer = nullptr;
 char*                       message = nullptr;
 
 // Neural Network Variables
@@ -59,7 +79,7 @@ const tflite::Model*        model = nullptr;
 tflite::MicroInterpreter*   interpreter = nullptr;
 TfLiteTensor*               input;
 TfLiteTensor*               output;
-uint8_t                     tensor_arena[K_TENSOR_ARENA_SIZE];
+uint8_t*                    tensor_arena = nullptr;
 bool                        modelLoaded = false;
 bool                        firstInferenceDone = false; 
 
@@ -182,8 +202,18 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
     }
     Serial.println("LAYER " + String(i) + " INPUT DATA:");
     for (int j = 0; j < numInput; ++j) {
+  #ifdef ALL
       Serial.print(inputData[j]);
       Serial.print(" ");
+  #else // Only print first 3 and last 3 elements
+      if (j < 3) {
+        Serial.print(inputData[j]);
+        Serial.print(" ");
+      } else if (j >= numInput-3) {
+        Serial.print(inputData[j]);
+        Serial.print(" ");
+      }
+  #endif // ALL
     }
     Serial.println();
 #endif // DEBUG
@@ -212,8 +242,18 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
     }
     Serial.println("LAYER " + String(i) + " OUTPUT DATA:");
     for (int j = 0; j < numOutput; ++j) {
+  #ifdef ALL
       Serial.print(outputData[j]);
       Serial.print(" ");
+  #else // Only print first 3 and last 3 elements
+      if (j < 3) {
+        Serial.print(outputData[j]);
+        Serial.print(" ");
+      } else if (j >= numOutput-3) {
+        Serial.print(outputData[j]);
+        Serial.print(" ");
+      }
+  #endif // ALL
     }
     Serial.println();
 #endif // DEBUG
@@ -329,7 +369,7 @@ void processIncomingMessage(char* topic, char* payload, AsyncMqttClientMessagePr
   message[total] = '\0';
 
   // Parse the JSON message and store it in the DynamicJsonDocument
-  DynamicJsonDocument doc(INPUT_JSONDOC_SIZE);
+  JsonDocument doc(&allocator);
   DeserializationError error = deserializeJson(doc, message);
 
   // Check for parsing errors
@@ -455,6 +495,13 @@ void wifiConfiguration(){
  */
 void setup() {
   Serial.begin(115200);
+  if (psramInit()) {
+    Serial.println("The PSRAM is correctly initialized");
+  } else {
+    Serial.println("PSRAM does not work");
+  }
+  inputBuffer = (float*)ps_malloc(MAX_ELEMENTS_PER_MODEL_LAYER*sizeof(float)); 
+  tensor_arena = (uint8_t*)ps_malloc(K_TENSOR_ARENA_SIZE*sizeof(uint8_t));
   mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
   wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
   wifiConfiguration();          // Wi-Fi Connection

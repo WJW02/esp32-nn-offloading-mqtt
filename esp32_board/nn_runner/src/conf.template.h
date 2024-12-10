@@ -17,10 +17,6 @@ const char* NTP_SRV             = "0.it.pool.ntp.org";
 const long NTP_GMT_OFFSET       = 0;
 const int NTP_DAYLIGHT_OFFSET   = 0;
 // ------------------------------------------------------------------------------------------------------------------------------------------------------
-// JSON Document Size Configuration
-constexpr int INPUT_JSONDOC_SIZE = 65*1024;
-constexpr int OUTPUT_JSONDOC_SIZE = 65*1024;
-// ------------------------------------------------------------------------------------------------------------------------------------------------------
 // Model Configuration
 const int MAX_NUM_LAYER = 7;
 constexpr int BATCH_SIZE = 1;

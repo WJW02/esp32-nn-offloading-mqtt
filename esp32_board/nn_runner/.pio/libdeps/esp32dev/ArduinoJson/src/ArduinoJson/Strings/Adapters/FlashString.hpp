@@ -1,5 +1,5 @@
 // ArduinoJson - https://arduinojson.org
-// Copyright © 2014-2023, Benoit BLANCHON
+// Copyright © 2014-2024, Benoit BLANCHON
 // MIT License
 
 #pragma once
@@ -24,6 +24,10 @@ class FlashString {
     ARDUINOJSON_ASSERT(str_ != 0);
     ARDUINOJSON_ASSERT(i <= size_);
     return static_cast<char>(pgm_read_byte(str_ + i));
+  }
+
+  const char* data() const {
+    return nullptr;
   }
 
   size_t size() const {
@@ -59,8 +63,8 @@ class FlashString {
     ::memcpy_P(p, s.str_, n);
   }
 
-  StringStoragePolicy::Copy storagePolicy() const {
-    return StringStoragePolicy::Copy();
+  bool isLinked() const {
+    return false;
   }
 
  private:
@@ -70,7 +74,7 @@ class FlashString {
 
 template <>
 struct StringAdapter<const __FlashStringHelper*, void> {
-  typedef FlashString AdaptedString;
+  using AdaptedString = FlashString;
 
   static AdaptedString adapt(const __FlashStringHelper* s) {
     return AdaptedString(s, s ? strlen_P(reinterpret_cast<const char*>(s)) : 0);
@@ -79,7 +83,7 @@ struct StringAdapter<const __FlashStringHelper*, void> {
 
 template <>
 struct SizedStringAdapter<const __FlashStringHelper*, void> {
-  typedef FlashString AdaptedString;
+  using AdaptedString = FlashString;
 
   static AdaptedString adapt(const __FlashStringHelper* s, size_t n) {
     return AdaptedString(s, n);
