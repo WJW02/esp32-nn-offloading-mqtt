@@ -8,6 +8,7 @@
 #include <sys/time.h>
 #include <UUID.h>
 #include <ArduinoJson.h>
+#include "esp_task_wdt.h"
 
 /* 
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -219,7 +220,9 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
 #endif // DEBUG
 
     // Run inference
+    esp_task_wdt_reset();
     interpreter->Invoke();
+    esp_task_wdt_reset();
 
     // Extract relevant information from the output tensor
     output = interpreter->output(0);
