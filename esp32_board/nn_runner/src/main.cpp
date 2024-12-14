@@ -172,6 +172,9 @@ void loadNeuralNetworkLayer(String layer_name){
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 */
 extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuffer[]) {
+  // Register the current running task to the watchdog
+  esp_task_wdt_add(NULL); 
+
   // Initialize input data with image
   float* inputData = inputBuffer;
   int inputSize = BATCH_SIZE * IMAGE_HEIGHT * IMAGE_WIDTH * CHANNELS * sizeof(float);
@@ -498,6 +501,7 @@ void wifiConfiguration(){
  */
 void setup() {
   Serial.begin(115200);
+  esp_task_wdt_init(WDT_TIMEOUT, true); // Watchdog Timer
   if (psramInit()) {
     Serial.println("The PSRAM is correctly initialized");
   } else {

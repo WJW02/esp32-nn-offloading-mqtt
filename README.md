@@ -28,7 +28,7 @@ Edit the `conf.h` file to set up the following configurations:
 - **Wi-Fi Credentials:** `SSID` and `PWD`
 - **MQTT Broker:** `MQTT_SRV`, `MQTT_PORT`
 - **NTP Server:** `NTP_SRV`, `NTP_GMT_OFFSET`, `NTP_DAYLIGHT_OFFSET`
-- **Model:** `MAX_NUM_LAYER`, `BATCH_SIZE`, `IMAGE_HEIGHT`, `IMAGE_WIDTH`, `CHANNELS`, `MAX_ELEMENTS_PER_MODEL_LAYER`, `K_TENSOR_ARENA_SIZE`
+- **Model:** `MAX_NUM_LAYER`, `BATCH_SIZE`, `IMAGE_HEIGHT`, `IMAGE_WIDTH`, `CHANNELS`, `MAX_ELEMENTS_PER_MODEL_LAYER`, `K_TENSOR_ARENA_SIZE`, `WDT_TIMEOUT`
 
 ## Model Setup
 

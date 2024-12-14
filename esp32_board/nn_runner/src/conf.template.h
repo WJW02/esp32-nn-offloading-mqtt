@@ -25,6 +25,7 @@ constexpr int IMAGE_WIDTH = 32;
 constexpr int CHANNELS = 3;
 constexpr int MAX_ELEMENTS_PER_MODEL_LAYER = 1*32*32*16;
 constexpr int K_TENSOR_ARENA_SIZE = 85*1024;
+#define WDT_TIMEOUT 10
 // ------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #endif // CONF_H
