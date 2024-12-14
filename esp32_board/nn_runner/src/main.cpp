@@ -342,7 +342,7 @@ void getModelDataForPrediction(const JsonArray& inputData) {
         for (int w = 0; w < IMAGE_WIDTH; ++w) {
           for (int c = 0; c < CHANNELS; ++c) {
             int i = b*IMAGE_HEIGHT*IMAGE_WIDTH*CHANNELS + h*IMAGE_WIDTH*CHANNELS + w*CHANNELS + c;
-            inputBuffer[i] = inputData[b][h][w][c]; // Assuming inputData contains numeric characters
+            inputBuffer[i] = inputData[b][h][w][c].as<float>() / 255.0; // Assuming inputData contains numeric characters
           }
         }
       }
