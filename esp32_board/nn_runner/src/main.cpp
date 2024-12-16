@@ -72,6 +72,9 @@ bool                        testFinished = false;
 bool                        modelDataLoaded = false;
 float*                      inputBuffer = nullptr;
 char*                       message = nullptr;
+#ifdef FOMO
+float*                      lastMultiOutputLayerData = nullptr;
+#endif // FOMO
 
 // Neural Network Variables
 tflite::MicroErrorReporter  micro_error_reporter;
@@ -179,16 +182,34 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
   float* inputData = inputBuffer;
   int inputSize = BATCH_SIZE * IMAGE_HEIGHT * IMAGE_WIDTH * CHANNELS * sizeof(float);
 
+#ifdef FOMO
+  int multiOutputLayers[] = {16, 34, 43};
+  size_t multiOutputLayersSize = sizeof(multiOutputLayers)/sizeof(multiOutputLayers[0]);
+#endif
+
   // Assuming inputData is in the format expected by your neural network
   for (int i = 0; i <= offloading_layer_index; i++) {
     String layer_name = "layer_" + String(i);
     float inizio = micros();
     
     loadNeuralNetworkLayer(layer_name); // Load the appropriate layer
-    input= interpreter->input(0);
+    input = interpreter->input(0);
 
     // Copy the input data to the input tensor
     memcpy(input->data.f, inputData, inputSize);
+
+#ifdef FOMO
+    // Copy the input data of last layer with multiple outputs to the input tensor
+    if (interpreter->inputs_size() > 1) {
+      if (interpreter->inputs_size() == 2) {
+        input = interpreter->input(1);
+        memcpy(input->data.f, lastMultiOutputLayerData, inputSize);
+      } else {
+        Serial.println("Error: this device can only handle sequential and FOMO models");
+        return;
+      }
+    }
+#endif
 
 #ifdef DEBUG
     Serial.print("LAYER " + String(i) + " INPUT TENSOR: (");
@@ -220,6 +241,26 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
   #endif // ALL
     }
     Serial.println();
+  #ifdef FOMO
+    if (interpreter->inputs_size() == 2) {
+      Serial.println("LAYER " + String(i) + " INPUT DATA 2:");
+      for (int j = 0; j < numInput; ++j) {
+    #ifdef ALL
+        Serial.print(lastMultiOutputLayerData[j]);
+        Serial.print(" ");
+    #else // Only print first 3 and last 3 elements
+        if (j < 3) {
+          Serial.print(lastMultiOutputLayerData[j]);
+          Serial.print(" ");
+        } else if (j >= numInput-3) {
+          Serial.print(lastMultiOutputLayerData[j]);
+          Serial.print(" ");
+        }
+    #endif // ALL
+      }
+      Serial.println();
+    }
+  #endif // FOMO
 #endif // DEBUG
 
     // Run inference
@@ -267,6 +308,16 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
     // Set next layer's input data and size
     memcpy(inputData, outputData, outputSize);
     inputSize = outputSize;
+
+#ifdef FOMO
+    // Saves the output of the layer with multiple outputs for future use
+    for (int j = 0; j < multiOutputLayersSize; ++j) {
+      if (i == multiOutputLayers[j]) {
+        memcpy(lastMultiOutputLayerData, outputData, outputSize);
+        break;
+      }
+    }
+#endif
 
     // Store inference time in seconds
     jsonDoc["layer_inference_time"][i] = (micros() - inizio) / 1000000.0; // Convert microseconds to seconds
@@ -509,6 +560,9 @@ void setup() {
   }
   inputBuffer = (float*)ps_malloc(MAX_ELEMENTS_PER_MODEL_LAYER*sizeof(float)); 
   tensor_arena = (uint8_t*)ps_malloc(K_TENSOR_ARENA_SIZE*sizeof(uint8_t));
+#ifdef FOMO
+  lastMultiOutputLayerData = (float*)ps_malloc(MAX_ELEMENTS_PER_MODEL_LAYER*sizeof(float)); 
+#endif // FOMO
   mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
   wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
   wifiConfiguration();          // Wi-Fi Connection

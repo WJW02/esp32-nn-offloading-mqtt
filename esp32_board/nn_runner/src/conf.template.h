@@ -26,6 +26,7 @@ constexpr int CHANNELS = 3;
 constexpr int MAX_ELEMENTS_PER_MODEL_LAYER = 1*32*32*16;
 constexpr int K_TENSOR_ARENA_SIZE = 85*1024;
 #define WDT_TIMEOUT 10
+// #define FOMO // Comment for Sequential models / Uncomment for FOMO models
 // ------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #endif // CONF_H
