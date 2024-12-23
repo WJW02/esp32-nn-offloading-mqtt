@@ -28,5 +28,29 @@ constexpr int K_TENSOR_ARENA_SIZE = 85*1024;
 #define WDT_TIMEOUT 10
 // #define FOMO // Comment for Sequential models / Uncomment for FOMO models
 // ------------------------------------------------------------------------------------------------------------------------------------------------------
+// Camera Configuration
+#define CAMERA_PIN_PWDN -1
+#define CAMERA_PIN_RESET -1
+
+#define CAMERA_PIN_VSYNC 6
+#define CAMERA_PIN_HREF 7
+#define CAMERA_PIN_PCLK 13
+#define CAMERA_PIN_XCLK 15
+
+#define CAMERA_PIN_SIOD 4
+#define CAMERA_PIN_SIOC 5
+
+#define CAMERA_PIN_D0 11
+#define CAMERA_PIN_D1 9
+#define CAMERA_PIN_D2 8
+#define CAMERA_PIN_D3 10
+#define CAMERA_PIN_D4 12
+#define CAMERA_PIN_D5 18
+#define CAMERA_PIN_D6 17
+#define CAMERA_PIN_D7 16
+
+#define XCLK_FREQ_HZ 16000000
+#define FRAMESIZE_CUSTOM FRAMESIZE_96X96
+// ------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #endif // CONF_H

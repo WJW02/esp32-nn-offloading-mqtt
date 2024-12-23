@@ -9,6 +9,7 @@
 #include <UUID.h>
 #include <ArduinoJson.h>
 #include "esp_task_wdt.h"
+#include "esp_camera.h"
 
 /* 
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -24,6 +25,7 @@
 
 #define MODEL_NAME "test_model"
 #include "model_layers/layers.h"
+#include "conf.h"
 
 /* 
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -49,12 +51,11 @@ struct SpiRamAllocator : ArduinoJson::Allocator {
 *  CONFIGURATIONS & GLOBAL VARIABLES
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 */
-#include "conf.h"
-
 // Communication & Offloading Variables
 AsyncMqttClient             mqttClient;
 TimerHandle_t               mqttReconnectTimer;
 TimerHandle_t               wifiReconnectTimer;
+TimerHandle_t               deviceRegistrationTimer;
 bool                        deviceRegistered = false;
 UUID                        uuid;
 String                      MessageUUID = "";
@@ -62,16 +63,15 @@ String                      DeviceUUID = "";
 SpiRamAllocator             allocator;
 JsonDocument                jsonDoc(&allocator);
 
-String                      end_computation_topic;
 String                      device_registration_topic = "devices/";
-String                      model_data_topic;
-String                      model_inference_topic;
+String                      offloading_layer_topic;
+String                      input_data_topic;
 String                      model_inference_result_topic;
 
-bool                        testFinished = false;
 bool                        modelDataLoaded = false;
 float*                      inputBuffer = nullptr;
 char*                       message = nullptr;
+int                         best_offloading_layer_index = MAX_NUM_LAYER-1;
 #ifdef FOMO
 float*                      lastMultiOutputLayerData = nullptr;
 #endif // FOMO
@@ -107,7 +107,7 @@ String getCurrTimeStr(){
 void timeConfiguration(){
   // Configure NTP time synchronization
   configTime(NTP_GMT_OFFSET, NTP_DAYLIGHT_OFFSET, NTP_SRV);
-  Serial.println("Connecting to NTP Server");
+  Serial.println("Connecting to NTP Server...");
   // Try obtaining the time until successful
   struct tm timeinfo;
   while (!getLocalTime(&timeinfo)) {
@@ -338,9 +338,10 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
   }
 
   Serial.println("Last layer output: "+jsonDoc["layer_output"].as<String>());
-  publishDevicePrediction(offloading_layer_index, jsonDoc["layer_output"], jsonDoc["layer_inference_time"]);
+  if (deviceRegistered) {
+    publishDevicePrediction(offloading_layer_index, jsonDoc["layer_output"], jsonDoc["layer_inference_time"]);
+  }
 }
-
 
 /*
  * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -358,45 +359,23 @@ void generateMessageUUID(){
   DeviceUUID = "device_01"; // + MessageUUID;
 }
 
-/*
-* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-* REGISTER THE DEVICE ON THE EDGE
-* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-*/
-void registerDevice(){
-  // Generate the JSON message
-  jsonDoc["timestamp"] = getCurrTimeStr();
-  jsonDoc["message_id"] = MessageUUID;
-  jsonDoc["device_id"] = DeviceUUID;
-  jsonDoc["message_content"] = "HelloWorld!";
-  // Serialize the JSON document to a string
-  String jsonMessage;
-  serializeJson(jsonDoc, jsonMessage);
-  // Publish the JSON message to the topic
-  mqttClient.publish(device_registration_topic.c_str(), 2, false, (char*)jsonMessage.c_str());
-  Serial.println("Device Registered");
-  deviceRegistered = true;
-}
-
 /* 
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 * GET MODEL DATA FOR PREDICTION
 * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 */
-#include <ArduinoJson.h>  // Make sure to include the ArduinoJson library
-
-void getModelDataForPrediction(const JsonArray& inputData) {
-  // Convert the inputData string to a 2D array
+void getModelDataForPrediction(const camera_fb_t* fb) {
+  uint16_t* pixels = (uint16_t*)fb->buf;
+  int n = fb->height*fb->width;
   try {
-    for (int b = 0; b < BATCH_SIZE; ++b) {
-      for (int h = 0; h < IMAGE_HEIGHT; ++h) {
-        for (int w = 0; w < IMAGE_WIDTH; ++w) {
-          for (int c = 0; c < CHANNELS; ++c) {
-            int i = b*IMAGE_HEIGHT*IMAGE_WIDTH*CHANNELS + h*IMAGE_WIDTH*CHANNELS + w*CHANNELS + c;
-            inputBuffer[i] = inputData[b][h][w][c].as<float>() / 255.0; // Assuming inputData contains numeric characters
-          }
-        }
-      }
+    for (int i = 0; i < n; i++) {
+      uint16_t p = pixels[i];
+      // Convert big endian to little endian
+      p = (p << 0x8) | (p >> 0x8);
+      // Convert rgb565 image to normalized array of pixels rgb
+      inputBuffer[i*3] = (p >> 11) / 31.0;
+      inputBuffer[i*3+1] = ((p >> 5) & 0x3f) / 63.0;
+      inputBuffer[i*3+2] = (p & 0x1f) / 31.0;
     }
     Serial.println("Model input data received");
   } catch (const std::exception& e) {
@@ -440,28 +419,18 @@ void processIncomingMessage(char* topic, char* payload, AsyncMqttClientMessagePr
   Serial.print("Received message:");
   Serial.println(topic);
 
-  // Check if the message is for model_data
-  if (strcmp(topic, model_data_topic.c_str()) == 0) {
-    JsonArray inputData = doc["input_data"]; 
-    getModelDataForPrediction(inputData);
-  }
-  
   // Check if the message is for model_inference
-  if (strcmp(topic, model_inference_topic.c_str()) == 0) {
-    int offloading_layer_index = doc["offloading_layer_index"];
-    if (offloading_layer_index >= MAX_NUM_LAYER) {
+  if (strcmp(topic, offloading_layer_topic.c_str()) == 0) {
+    xTimerReset(deviceRegistrationTimer, 0);
+    if (!deviceRegistered) {
+      deviceRegistered = true;
+      Serial.println("Device Registered");
+    }
+    if (doc["offloading_layer_index"] >= MAX_NUM_LAYER) {
       Serial.println("Invalid offloading layer");
       return;
     }
-    JsonArray inputData = doc["input_data"]; 
-    getModelDataForPrediction(inputData);
-    runNeuralNetworkLayer(offloading_layer_index, inputBuffer);
-  }
-
-  // Check if the test is finished
-  if (strcmp(topic, end_computation_topic.c_str()) == 0) {
-    Serial.println("Ending Computation");
-    testFinished = true;
+    best_offloading_layer_index = doc["offloading_layer_index"];
   }
 
   delete[] message;
@@ -470,18 +439,39 @@ void processIncomingMessage(char* topic, char* payload, AsyncMqttClientMessagePr
 
 void dispatchCallbackMessages() {
   // Set the topics
-  end_computation_topic = DeviceUUID + "/end_computation";
-  model_data_topic = DeviceUUID + "/model_data";
-  model_inference_topic = DeviceUUID + "/model_inference";
+  offloading_layer_topic = DeviceUUID + "/offloading_layer";
+  input_data_topic = DeviceUUID + "/input_data";
   model_inference_result_topic = DeviceUUID + "/model_inference_result";
 
   // Subscribe to the topic
-  mqttClient.subscribe(model_data_topic.c_str(), 2);
-  mqttClient.subscribe(model_inference_topic.c_str(), 2);
-  mqttClient.subscribe(end_computation_topic.c_str(), 2);
+  mqttClient.subscribe(offloading_layer_topic.c_str(), 2);
 
   // Set the callback function
   mqttClient.onMessage(processIncomingMessage);
+}
+
+/*
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+* REGISTER THE DEVICE ON THE EDGE
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+*/
+void registerDevice(){
+  deviceRegistered = false;
+
+  generateMessageUUID();        // Generate an Identifier for the message
+  dispatchCallbackMessages();   // Set the callback function for the MQTT messages
+
+  // Generate the JSON message
+  jsonDoc["timestamp"] = getCurrTimeStr();
+  jsonDoc["message_id"] = MessageUUID;
+  jsonDoc["device_id"] = DeviceUUID;
+  jsonDoc["message_content"] = "HelloWorld!";
+  // Serialize the JSON document to a string
+  String jsonMessage;
+  serializeJson(jsonDoc, jsonMessage);
+  // Publish the JSON message to the topic
+  mqttClient.publish(device_registration_topic.c_str(), 2, false, (char*)jsonMessage.c_str());
+  Serial.println("Registration request sent");
 }
 
 /* 
@@ -496,14 +486,15 @@ void connectToMqtt() {
 
 void onMqttConnect(bool sessionPresent) {
   Serial.println("Connected to MQTT.");
-  timeConfiguration();          // Synchronize Timer - NTP server
-  generateMessageUUID();        // Generate an Identifier for the message
-  dispatchCallbackMessages();   // Set the callback function for the MQTT messages
   registerDevice();             // Register the device on the edge
+  xTimerStart(deviceRegistrationTimer, 0);
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
-  Serial.println("Disconnected form MQTT.");
+  xTimerStop(deviceRegistrationTimer, 0);
+  deviceRegistered = false;
+  best_offloading_layer_index = MAX_NUM_LAYER-1;
+  Serial.println("Disconnected from MQTT.");
   if (WiFi.isConnected()) {
     xTimerStart(mqttReconnectTimer, 0);
   }
@@ -531,6 +522,7 @@ void WiFiEvent(WiFiEvent_t event) {
       Serial.println("WiFi connected");
       Serial.println("IP address: ");
       Serial.println(WiFi.localIP());
+      timeConfiguration();          // Synchronize Timer - NTP server
       connectToMqtt();
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -545,6 +537,47 @@ void wifiConfiguration(){
   WiFi.onEvent(WiFiEvent);
 }
 
+/* 
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+* CAMERA CONFIGURATION
+* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+*/
+void cameraConfiguration(){
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = CAMERA_PIN_D0;
+  config.pin_d1 = CAMERA_PIN_D1;
+  config.pin_d2 = CAMERA_PIN_D2;
+  config.pin_d3 = CAMERA_PIN_D3;
+  config.pin_d4 = CAMERA_PIN_D4;
+  config.pin_d5 = CAMERA_PIN_D5;
+  config.pin_d6 = CAMERA_PIN_D6;
+  config.pin_d7 = CAMERA_PIN_D7;
+  config.pin_xclk = CAMERA_PIN_XCLK;
+  config.pin_pclk = CAMERA_PIN_PCLK;
+  config.pin_vsync = CAMERA_PIN_VSYNC;
+  config.pin_href = CAMERA_PIN_HREF;
+  config.pin_sscb_sda = CAMERA_PIN_SIOD;
+  config.pin_sscb_scl = CAMERA_PIN_SIOC;
+  config.pin_pwdn = CAMERA_PIN_PWDN;
+  config.pin_reset = CAMERA_PIN_RESET;
+  config.xclk_freq_hz = XCLK_FREQ_HZ;
+  config.pixel_format = PIXFORMAT_RGB565;
+  config.frame_size = FRAMESIZE_CUSTOM;
+  config.jpeg_quality = 10;
+  config.fb_count = 2;
+  config.fb_location = CAMERA_FB_IN_PSRAM;
+  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+      Serial.printf("Camera init failed with error 0x%x\n", err);
+      return;
+  }
+  Serial.println("Camera initialized successfully.");
+}
+
 /*
  * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  * SETUP 
@@ -552,19 +585,26 @@ void wifiConfiguration(){
  */
 void setup() {
   Serial.begin(115200);
+  
   esp_task_wdt_init(WDT_TIMEOUT, true); // Watchdog Timer
+
   if (psramInit()) {
     Serial.println("The PSRAM is correctly initialized");
   } else {
     Serial.println("PSRAM does not work");
   }
+
   inputBuffer = (float*)ps_malloc(MAX_ELEMENTS_PER_MODEL_LAYER*sizeof(float)); 
   tensor_arena = (uint8_t*)ps_malloc(K_TENSOR_ARENA_SIZE*sizeof(uint8_t));
 #ifdef FOMO
   lastMultiOutputLayerData = (float*)ps_malloc(MAX_ELEMENTS_PER_MODEL_LAYER*sizeof(float)); 
 #endif // FOMO
+
+  cameraConfiguration();        // Camera OV2640
+
   mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
   wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
+  deviceRegistrationTimer = xTimerCreate("registrationTimer", pdMS_TO_TICKS(30000), pdTRUE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(registerDevice));
   wifiConfiguration();          // Wi-Fi Connection
   mqttConfiguration();          // MQTT
   connectToWifi();
@@ -576,8 +616,29 @@ void setup() {
  * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  */
 void loop() {
-  if(testFinished){
-    delay(10000);
-    ESP.restart();
+  // Capture a frame
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+      Serial.println("Failed to capture image");
+      return;
   }
+  Serial.printf("Captured image with size: %u bytes\n", fb->len);
+
+  // Send captured image
+  if (deviceRegistered) {
+    mqttClient.publish(input_data_topic.c_str(), 2, false, (char*)fb->buf, fb->len);
+    Serial.println("Captured image sent");
+  }
+
+  // Parse input for model
+  getModelDataForPrediction(fb);
+
+  // Run inference and send results
+  if (modelDataLoaded) {
+    runNeuralNetworkLayer(best_offloading_layer_index, inputBuffer);
+    modelDataLoaded = false;
+  }
+
+  // Free the frame buffer
+  esp_camera_fb_return(fb);
 }
