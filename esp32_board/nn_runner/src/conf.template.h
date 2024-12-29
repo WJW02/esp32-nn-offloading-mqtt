@@ -25,6 +25,8 @@ constexpr int IMAGE_WIDTH = 32;
 constexpr int CHANNELS = 3;
 constexpr int MAX_ELEMENTS_PER_MODEL_LAYER = 1*32*32*16;
 constexpr int K_TENSOR_ARENA_SIZE = 85*1024;
+// timestamp + device_id + message_id + offloading_layer_index + layer_output_size + layer_output + layers_inference_time_size + layers_inference_time
+constexpr int OUTPUT_MSG_SIZE = 1*sizeof(double) + 9*sizeof(char) + 4*sizeof(char) + 1*sizeof(int) + 1*sizeof(size_t) + 2*MAX_ELEMENTS_PER_MODEL_LAYER*sizeof(float) + 1*sizeof(int) + MAX_NUM_LAYER*sizeof(float);
 #define WDT_TIMEOUT 10
 // #define FOMO // Comment for Sequential models / Uncomment for FOMO models
 // ------------------------------------------------------------------------------------------------------------------------------------------------------

@@ -61,7 +61,6 @@ UUID                        uuid;
 String                      MessageUUID = "";
 String                      DeviceUUID = "";
 SpiRamAllocator             allocator;
-JsonDocument                jsonDoc(&allocator);
 
 String                      device_registration_topic = "devices/";
 String                      offloading_layer_topic;
@@ -70,7 +69,8 @@ String                      model_inference_result_topic;
 
 bool                        modelDataLoaded = false;
 float*                      inputBuffer = nullptr;
-char*                       message = nullptr;
+char*                       input_message = nullptr;
+char*                       output_message = nullptr;
 int                         best_offloading_layer_index = MAX_NUM_LAYER-1;
 #ifdef FOMO
 float*                      lastMultiOutputLayerData = nullptr;
@@ -104,6 +104,15 @@ String getCurrTimeStr(){
   return currentTimeString;
 }
 
+double getCurrTime(){
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  time_t currentTime = tv.tv_sec;
+  int microseconds = tv.tv_usec;
+  double timestamp = currentTime + (microseconds / 1000000.0);
+  return timestamp;
+}
+
 void timeConfiguration(){
   // Configure NTP time synchronization
   configTime(NTP_GMT_OFFSET, NTP_DAYLIGHT_OFFSET, NTP_SRV);
@@ -116,29 +125,8 @@ void timeConfiguration(){
 
   // Print current time
   Serial.println("NTP Time Configured - Current Time: ");
-  Serial.println(getCurrTimeStr());
+  Serial.println(getCurrTime(), 6);
   return;
-}
-
-/*
- * ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-* PUBLISH DEVICE PREDICTION
-* ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-*/
-void publishDevicePrediction(int offloading_layer_index, JsonArray layer_output, JsonArray layers_inference_time) {    // Generate the JSON message
-    jsonDoc["timestamp"] = getCurrTimeStr();
-    jsonDoc["message_id"] = MessageUUID;
-    jsonDoc["device_id"] = DeviceUUID;
-    jsonDoc["message_content"] = JsonObject();
-    jsonDoc["message_content"]["layer_output"] = layer_output;
-    jsonDoc["message_content"]["offloading_layer_index"] = offloading_layer_index;
-    jsonDoc["message_content"]["layers_inference_time"] = layers_inference_time;
-    // Serialize the JSON document to a string
-    String jsonMessage;
-    serializeJson(jsonDoc, jsonMessage);
-    // Publish the JSON message to the topic
-    mqttClient.publish(model_inference_result_topic.c_str(), 2, false, (char*)jsonMessage.c_str());
-    Serial.println("Published Prediction");
 }
 
 /* 
@@ -181,6 +169,9 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
   // Initialize input data with image
   float* inputData = inputBuffer;
   int inputSize = BATCH_SIZE * IMAGE_HEIGHT * IMAGE_WIDTH * CHANNELS * sizeof(float);
+
+  // Initialize inference times array
+  float inference_times[MAX_NUM_LAYER];
 
 #ifdef FOMO
   int multiOutputLayers[] = {16, 34, 43};
@@ -320,26 +311,43 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
 #endif
 
     // Store inference time in seconds
-    jsonDoc["layer_inference_time"][i] = (micros() - inizio) / 1000000.0; // Convert microseconds to seconds
+    inference_times[i] = (micros() - inizio) / 1000000.0; // Convert microseconds to seconds
 
     Serial.println("Computed layer: " + String(i) + " Inf Time: " + String((micros() - inizio) / 1000000.0) + " s");
   }
+  Serial.println("Model inference successful!");
 
-  // Compute number of elements
-  int numOutput = 1;
-  for (int i = 0; i < output->dims->size; ++i) {
-    numOutput *= output->dims->data[i];
-  }
-
-  // Store offloading layer output
-  float* outputData = output->data.f;
-  for (int i = 0; i < numOutput; ++i) {
-    jsonDoc["layer_output"][i] = outputData[i];
-  }
-
-  Serial.println("Last layer output: "+jsonDoc["layer_output"].as<String>());
   if (deviceRegistered) {
-    publishDevicePrediction(offloading_layer_index, jsonDoc["layer_output"], jsonDoc["layer_inference_time"]);
+    // Set up message
+    double timestamp = getCurrTime();
+    memcpy(output_message, &timestamp, sizeof(timestamp)); // sizeof(timestamp) == sizeof(double) == 8
+    int offset = sizeof(timestamp);
+
+    memcpy(output_message+offset, &DeviceUUID, 9);
+    offset += 9;
+
+    memcpy(output_message+offset, &MessageUUID, 4);
+    offset += 4;
+
+    memcpy(output_message+offset, &offloading_layer_index, sizeof(offloading_layer_index)); // sizeof(offloading_layer_index) == sizeof(int) == 4
+    offset += sizeof(offloading_layer_index);
+
+    memcpy(output_message+offset, &output->bytes, sizeof(output->bytes)); // sizeof(output->bytes) == sizeof(size_t) == 4
+    offset += sizeof(output->bytes);
+
+    memcpy(output_message+offset, output->data.f, output->bytes);
+    offset += output->bytes;
+
+    int layers_inference_time_size = (offloading_layer_index+1)*sizeof(int);
+    memcpy(output_message+offset, &layers_inference_time_size, sizeof(layers_inference_time_size)); // sizeof(layers_inference_time_size) == sizeof(int) == 4
+    offset += sizeof(layers_inference_time_size);
+
+    memcpy(output_message+offset, inference_times, sizeof(inference_times)); // sizeof(inference_times) == layers_inference_time_size
+    offset += sizeof(inference_times);
+
+    // Publish device prediction
+    mqttClient.publish(model_inference_result_topic.c_str(), 2, false, output_message, offset);
+    Serial.println("Published Prediction");
   }
 }
 
@@ -354,8 +362,8 @@ void generateMessageUUID(){
   uuid.seed(seed);
   uuid.setRandomMode();
   uuid.generate();
-  MessageUUID = (String)uuid.toCharArray();
-  MessageUUID = MessageUUID.substring(0, 4);
+  String uuidStr = (String)uuid.toCharArray();
+  MessageUUID = uuidStr.substring(0, 4);
   DeviceUUID = "device_01"; // + MessageUUID;
 }
 
@@ -388,12 +396,12 @@ void getModelDataForPrediction(const camera_fb_t* fb) {
 void processIncomingMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
   // Instantiate message
   if (index == 0) {
-    message = new char[total+1];
+    input_message = new char[total+1];
   }
 
   // Bufferize message fragments
   for (size_t i = 0; i < len; i++) {
-    message[index+i] = payload[i];
+    input_message[index+i] = payload[i];
   }
 
   // Return if we don't have whole message yet
@@ -402,18 +410,18 @@ void processIncomingMessage(char* topic, char* payload, AsyncMqttClientMessagePr
   }
 
   // Add terminator
-  message[total] = '\0';
+  input_message[total] = '\0';
 
   // Parse the JSON message and store it in the DynamicJsonDocument
   JsonDocument doc(&allocator);
-  DeserializationError error = deserializeJson(doc, message);
+  DeserializationError error = deserializeJson(doc, input_message);
 
   // Check for parsing errors
   if (error) {
     Serial.print("JSON parsing error: ");
     Serial.println(error.c_str());
-    delete[] message;
-    message = nullptr;
+    delete[] input_message;
+    input_message = nullptr;
     return;
   }
   Serial.print("Received message:");
@@ -433,8 +441,8 @@ void processIncomingMessage(char* topic, char* payload, AsyncMqttClientMessagePr
     best_offloading_layer_index = doc["offloading_layer_index"];
   }
 
-  delete[] message;
-  message = nullptr;
+  delete[] input_message;
+  input_message = nullptr;
 }
 
 void dispatchCallbackMessages() {
@@ -462,6 +470,7 @@ void registerDevice(){
   dispatchCallbackMessages();   // Set the callback function for the MQTT messages
 
   // Generate the JSON message
+  JsonDocument jsonDoc(&allocator);
   jsonDoc["timestamp"] = getCurrTimeStr();
   jsonDoc["message_id"] = MessageUUID;
   jsonDoc["device_id"] = DeviceUUID;
@@ -486,6 +495,7 @@ void connectToMqtt() {
 
 void onMqttConnect(bool sessionPresent) {
   Serial.println("Connected to MQTT.");
+  mqttClient.setKeepAlive(60);
   registerDevice();             // Register the device on the edge
   xTimerStart(deviceRegistrationTimer, 0);
 }
@@ -596,6 +606,7 @@ void setup() {
 
   inputBuffer = (float*)ps_malloc(MAX_ELEMENTS_PER_MODEL_LAYER*sizeof(float)); 
   tensor_arena = (uint8_t*)ps_malloc(K_TENSOR_ARENA_SIZE*sizeof(uint8_t));
+  output_message = (char*)ps_malloc(OUTPUT_MSG_SIZE);
 #ifdef FOMO
   lastMultiOutputLayerData = (float*)ps_malloc(MAX_ELEMENTS_PER_MODEL_LAYER*sizeof(float)); 
 #endif // FOMO
@@ -608,6 +619,7 @@ void setup() {
   wifiConfiguration();          // Wi-Fi Connection
   mqttConfiguration();          // MQTT
   connectToWifi();
+  delay(5000);
 }
 
 /* 
