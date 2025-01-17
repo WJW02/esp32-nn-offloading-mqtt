@@ -1,6 +1,6 @@
 # ESP32 Neural Network Offloading with MQTT
 
-This project demonstrates offloading neural network computations from an ESP32 device to an edge server using MQTT. The ESP32 device connects to a Wi-Fi network, registers itself on the edge server, and communicates through MQTT topics to perform neural network inference layer by layer.
+This project demonstrates offloading neural network computations from an `ESP32-S3-EYE` device to an edge server using MQTT. The ESP32 device connects to a Wi-Fi network, registers itself on the edge server, and communicates through MQTT topics to perform neural network inference layer by layer.
 
 ## Features
 
@@ -32,11 +32,12 @@ Edit the `conf.h` file to set up the following configurations:
 
 ## Model Setup
 
-The project supports up to 5 layers of a TensorFlow Lite model, which are loaded and run sequentially. Each layer is defined in its own header file (e.g., `layer_0.h`, `layer_1.h`).
+The project supports TensorFlow Lite models, which are loaded and run sequentially. Each layer is defined in its own header file (e.g., `layer_0.h`, `layer_1.h`).
 
 Ensure that the TensorFlow Lite model layers are properly converted and placed in the `model_layers` directory.
 
 ## Board setup
+
 PlatformIO board configuration for `ESP32-S3-EYE` (8 MB Octal PSRAM and a 8 MB flash):
 
 ```json
@@ -103,10 +104,10 @@ Copy it in a `esp32-s3-devkitc-1-n8r8.json` file a save it in `~/.platformio/pla
 
 The following MQTT topics are used for communication:
 
-- `devices/`: Device registration.
-- `DeviceUUID/model_data`: Topic to send model data for inference.
-- `DeviceUUID/model_inference`: Topic to trigger inference for a specific layer.
-- `DeviceUUID/model_inference_result`: Topic to receive inference results.
+- `devices/`: Topic to send device registration.
+- `DeviceUUID/offloading_layer`: Topic to receive best offloading layer.
+- `DeviceUUID/input_data`: Topic to send input data.
+- `DeviceUUID/model_inference_result`: Topic to send inference results.
 
 ## Running the Project
 
@@ -116,21 +117,33 @@ The following MQTT topics are used for communication:
    - Connect to Wi-Fi.
    - Register itself on the edge server.
    - Subscribe to necessary MQTT topics.
-   - Perform neural network inference layer by layer upon receiving input data and an offloading layer index.
+   - Perform neural network inference layer by layer and offload based on index from `DeviceUUID/offloading_layer`.
 
 ## Example Workflow
 
+```mermaid
+sequenceDiagram
+	NOTE over Device: Initialize
+	NOTE over Edge: Initialize and<br>run inference<br>on random image
+	Device ->> Edge: Registration message
+	NOTE over Edge: Track network speed and<br>initialize device times
+loop
+	NOTE over Edge: Run offloading<br>algorithm
+	NOTE over Device: Get input data
+	Edge ->> Device: Offloading layer index
+	NOTE over Device: Run inference up through<br>offloading layer
+	Device ->> Edge: Offloading layer output and layers inference time
+	NOTE over Edge: Track device times<br>and network speed
+	NOTE over Edge: Run inference and<br>track edge times
+end
+```
+
 1. **Device Registration:** The ESP32 registers itself to the edge server by publishing a registration message.
-2. **Receive Input Data:** The device receives input data for the neural network through the `model_data` topic.
-3. **Run Inference:** The device runs inference for each layer of the neural network and publishes the results to the `model_inference_result` topic.
-4. **Publish Results:** Inference results, including the output and inference time for each layer, are published to the edge server.
+2. **Receive Input Data:** The device receives best offloading layer index for the neural network through the `offloading_layer` topic.
+3. **Run Inference:** The device runs inference for each layer of the neural network up to offloading layer and publishes the results to the `model_inference_result` topic.
+4. **Publish Results:** Inference results, including the output and inference time for each layer, are published on the edge server.
 
 ## Notes
 
-- The ESP32 must be equipped with enough PSRAM to hold `inputBuffer`, `tensor_arena`, `jsonDoc` and `doc`
-- The device restarts automatically after completing the test, ensuring fresh initialization for the next session.
-- Ensure that the edge server is properly configured to handle incoming MQTT messages and process the neural network inference results.
-
-## License
-
-This project is licensed under
+- The ESP32 must be equipped with enough PSRAM to hold `inputBuffer`, `tensor_arena`, `output_message`, `lastMultiOutputLayerData`, `fb`, `jsonDoc` and `doc`
+- The ESP32 can work standalone, but it will perdiodically try to connect to an edge server on `devices/`, so ensure that the server is properly configured to handle incoming MQTT messages and process the neural network inference results.
