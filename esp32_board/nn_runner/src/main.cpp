@@ -54,6 +54,7 @@ struct SpiRamAllocator : ArduinoJson::Allocator {
 // Communication & Offloading Variables
 AsyncMqttClient             mqttClient;
 TimerHandle_t               mqttReconnectTimer;
+TimerHandle_t               mqttDisconnectTimer;
 TimerHandle_t               wifiReconnectTimer;
 TimerHandle_t               deviceRegistrationTimer;
 bool                        deviceRegistered = false;
@@ -493,19 +494,27 @@ void connectToMqtt() {
   mqttClient.connect();
 }
 
+void disconnectFromMqtt() {
+  Serial.println("Disconnecting from MQTT...");
+  mqttClient.disconnect();
+}
+
 void onMqttConnect(bool sessionPresent) {
   Serial.println("Connected to MQTT.");
   mqttClient.setKeepAlive(60);
   registerDevice();             // Register the device on the edge
   xTimerStart(deviceRegistrationTimer, 0);
+  xTimerStart(mqttDisconnectTimer, 0);
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
   xTimerStop(deviceRegistrationTimer, 0);
+  xTimerStop(mqttDisconnectTimer, 0);
   deviceRegistered = false;
   best_offloading_layer_index = MAX_NUM_LAYER-1;
   Serial.println("Disconnected from MQTT.");
   if (WiFi.isConnected()) {
+    timeConfiguration();          // Synchronize Timer - NTP server
     xTimerStart(mqttReconnectTimer, 0);
   }
 }
@@ -614,6 +623,7 @@ void setup() {
   cameraConfiguration();        // Camera OV2640
 
   mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
+  mqttDisconnectTimer = xTimerCreate("mqttDisconnectTimer", pdMS_TO_TICKS(600000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(disconnectFromMqtt));
   wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
   deviceRegistrationTimer = xTimerCreate("registrationTimer", pdMS_TO_TICKS(30000), pdTRUE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(registerDevice));
   wifiConfiguration();          // Wi-Fi Connection
