@@ -347,7 +347,7 @@ extern "C" void runNeuralNetworkLayer(int offloading_layer_index, float inputBuf
     offset += sizeof(inference_times);
 
     // Publish device prediction
-    mqttClient.publish(model_inference_result_topic.c_str(), 2, false, output_message, offset);
+    mqttClient.publish(model_inference_result_topic.c_str(), 0, false, output_message, offset);
     Serial.println("Published Prediction");
   }
 }
@@ -453,7 +453,7 @@ void dispatchCallbackMessages() {
   model_inference_result_topic = DeviceUUID + "/model_inference_result";
 
   // Subscribe to the topic
-  mqttClient.subscribe(offloading_layer_topic.c_str(), 2);
+  mqttClient.subscribe(offloading_layer_topic.c_str(), 0);
 
   // Set the callback function
   mqttClient.onMessage(processIncomingMessage);
@@ -480,7 +480,7 @@ void registerDevice(){
   String jsonMessage;
   serializeJson(jsonDoc, jsonMessage);
   // Publish the JSON message to the topic
-  mqttClient.publish(device_registration_topic.c_str(), 2, false, (char*)jsonMessage.c_str());
+  mqttClient.publish(device_registration_topic.c_str(), 0, false, (char*)jsonMessage.c_str());
   Serial.println("Registration request sent");
 }
 
@@ -648,7 +648,7 @@ void loop() {
 
   // Send captured image
   if (deviceRegistered) {
-    mqttClient.publish(input_data_topic.c_str(), 2, false, (char*)fb->buf, fb->len);
+    mqttClient.publish(input_data_topic.c_str(), 0, false, (char*)fb->buf, fb->len);
     Serial.println("Captured image sent");
   }
 
